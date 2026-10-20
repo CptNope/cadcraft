@@ -632,33 +632,127 @@ impl CadApp {
         let t0 = now_ms();
         control::begin_frame(ui.ctx());
         let t = theme::Tokens::get();
-        chrome::title_and_toolbar(self, ui);
-        if self.ui.in_window_menu {
-            menus::menu_bar(self, ui);
-        }
-        if self.ui.show_status_bar {
-            chrome::status_bar(self, ui);
-        }
-        if self.ui.show_file_tabs {
-            chrome::file_tabs(self, ui);
-        }
-        let has_doc = !self.session.docs.is_empty() && !self.ui.start_tab;
-        if has_doc && !self.ui.show_toolsets {
-            palettes::toolsets_strip(self, ui);
-        }
-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.canvas)).show(ui, |ui| {
-            if has_doc {
-                docking::show(self, ui);
-            } else {
-                chrome::start_page(self, ui);
+        if cfg!(target_arch = "wasm32") && ui.ctx().content_rect().width() < 760.0 {
+            self.phone_ui(ui, &t);
+        } else {
+            chrome::title_and_toolbar(self, ui);
+            if self.ui.in_window_menu {
+                menus::menu_bar(self, ui);
             }
-        });
+            if self.ui.show_status_bar {
+                chrome::status_bar(self, ui);
+            }
+            if self.ui.show_file_tabs {
+                chrome::file_tabs(self, ui);
+            }
+            let has_doc = !self.session.docs.is_empty() && !self.ui.start_tab;
+            if has_doc && !self.ui.show_toolsets {
+                palettes::toolsets_strip(self, ui);
+            }
+            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.canvas)).show(ui, |ui| {
+                if has_doc {
+                    docking::show(self, ui);
+                } else {
+                    chrome::start_page(self, ui);
+                }
+            });
+        }
         dialogs::show(self, ui.ctx());
         palettes::patterns::prompt_picker(self, ui.ctx());
         closing::prompt(self, ui.ctx());
         autosave::show(self, ui.ctx());
         autosave::gpu_notice(self, ui.ctx());
         self.frame_ms = now_ms() - t0;
+    }
+
+    /// Phone-only interface. Do not mutate the user's saved desktop docking arrangement.
+    /// Small screens get a full drawing canvas plus reachable Tools/Layers/Properties/Command tabs.
+    fn phone_ui(&mut self, ui: &mut egui::Ui, t: &theme::Tokens) {
+        let tab_id = egui::Id::new("cadcraft-phone-pane");
+        let mut tab = ui.ctx().data(|d| d.get_temp::<u8>(tab_id)).unwrap_or(0);
+        let has_doc = !self.session.docs.is_empty() && !self.ui.start_tab;
+        egui::Panel::top("cadcraft-phone-top")
+            .frame(egui::Frame::NONE.fill(t.chrome).inner_margin(egui::Margin::symmetric(8, 5)))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.small_button("New").clicked() {
+                        self.start("new");
+                        self.ui.start_tab = false;
+                        tab = 0;
+                    }
+                    if ui.small_button("Open").clicked() { self.start("ui.open"); }
+                    if has_doc && ui.small_button("Save").clicked() { self.start("qsave"); }
+                    if has_doc && ui.small_button("Undo").clicked() { self.start("undo"); }
+                    if has_doc && ui.small_button("Fit").clicked() {
+                        let _ = self.session.zoom_extents();
+                    }
+                    if has_doc && ui.small_button("Home").clicked() { self.ui.start_tab = true; }
+                });
+            });
+        let has_doc = !self.session.docs.is_empty() && !self.ui.start_tab;
+        if has_doc {
+            egui::Panel::bottom("cadcraft-phone-tabs")
+                .frame(egui::Frame::NONE.fill(t.chrome).inner_margin(egui::Margin::symmetric(6, 7)))
+                .show(ui, |ui| {
+                    egui::ScrollArea::horizontal().id_salt("cadcraft-phone-tabs-scroll").show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            for (index, title) in [(0, "Canvas"), (1, "Tools"), (2, "Layers"), (3, "Properties"), (4, "Command")] {
+                                if ui.selectable_label(tab == index, title).clicked() { tab = index; }
+                            }
+                        });
+                    });
+                });
+        }
+        ui.ctx().data_mut(|d| d.insert_temp(tab_id, tab));
+        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.canvas)).show(ui, |ui| {
+            if !has_doc {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(22.0);
+                        ui.heading("CADCraft");
+                        ui.label("2D CAD drafting on your phone");
+                        ui.add_space(12.0);
+                        if ui.button("New drawing").clicked() {
+                            self.start("new");
+                            self.ui.start_tab = false;
+                        }
+                        if ui.button("New metric drawing").clicked() {
+                            self.start("new.metric");
+                            self.ui.start_tab = false;
+                        }
+                        if ui.button("Open drawing").clicked() { self.start("ui.open"); }
+                        if ui.button("Sample drawing").clicked() {
+                            self.start("ui.sample");
+                            self.ui.start_tab = false;
+                        }
+                    });
+                });
+                return;
+            }
+            match tab {
+                1 => crate::palettes::toolsets(self, ui),
+                2 => { egui::ScrollArea::vertical().id_salt("phone-layers")
+                    .auto_shrink([false, false]).show(ui, |ui| crate::palettes::layers_section(self, ui)); }
+                3 => { egui::ScrollArea::vertical().id_salt("phone-properties")
+                    .auto_shrink([false, false]).show(ui, |ui| crate::palettes::properties_section(self, ui)); }
+                4 => {
+                    let cmd_id = egui::Id::new("cadcraft-phone-command");
+                    let mut command = ui.ctx().data(|d| d.get_temp::<String>(cmd_id)).unwrap_or_default();
+                    ui.heading("CAD command");
+                    ui.label("Enter commands or coordinates, then press Run.");
+                    let field = ui.add(egui::TextEdit::singleline(&mut command)
+                        .hint_text("LINE, CIRCLE, coordinates…").desired_width(f32::INFINITY));
+                    let run = ui.button("Run command").clicked()
+                        || (field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                    if run && !command.trim().is_empty() {
+                        self.cmdline(&command);
+                        command.clear();
+                    }
+                    ui.ctx().data_mut(|d| d.insert_temp(cmd_id, command));
+                }
+                _ => crate::canvas::show(self, ui),
+            }
+        });
     }
 
     fn drain_control(&mut self, ctx: &egui::Context) {
