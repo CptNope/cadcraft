@@ -3,15 +3,6 @@
 name: FreeBSD
 
 on:
-  push:
-    branches: [release]
-  pull_request:
-    paths:
-      - .github/workflows/freebsd.yml
-      - packaging/freebsd/**
-      - packaging/env.sh
-  schedule:
-    - cron: "27 3 * * *"
   workflow_dispatch:
 
 concurrency:
